@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Excel data files
+data/submissions.xlsx
+data/backups/*.xlsx
+data/exports/*.xlsx
+data/archives/*.xlsx
+
+# Keep directory structure
+!data/.gitkeep
+!data/backups/.gitkeep
+!data/exports/.gitkeep
+!data/archives/.gitkeep
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+tmp/
+temp/

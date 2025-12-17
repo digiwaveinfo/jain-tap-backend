@@ -1,0 +1,39 @@
+{
+  "name": "vihar-raksha-tap-backend",
+  "version": "1.0.0",
+  "description": "Backend API for Vihar Raksha Tap form application with Excel storage",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "init-excel": "node -e \"require('./src/services/excel.service').initializeFile()\"",
+    "backup": "node -e \"require('./src/services/backup.service').createBackup()\"",
+    "health-check": "node -e \"require('./src/services/monitor.service').checkFileSize().then(size => console.log('File size:', size.toFixed(2), 'MB'))\""
+  },
+  "keywords": [
+    "excel",
+    "form",
+    "gujarati",
+    "vihar-raksha-tap"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.18.2",
+    "exceljs": "^4.4.0",
+    "proper-lockfile": "^4.1.2",
+    "dotenv": "^16.3.1",
+    "cors": "^2.8.5",
+    "helmet": "^7.1.0",
+    "express-validator": "^7.0.1",
+    "nodemailer": "^6.9.7",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "node-cron": "^3.0.3",
+    "moment": "^2.29.4",
+    "express-rate-limit": "^7.1.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
