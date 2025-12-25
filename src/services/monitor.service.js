@@ -1,65 +1,11 @@
 const fs = require('fs').promises;
-const ExcelJS = require('exceljs');
-const excelConfig = require('../config/excel.config');
+const dbConfig = require('../config/db.config');
 const backupService = require('./backup.service');
+const dbService = require('./db.service');
+// Reuse excel config for threshold values if needed, or defaults
+const excelConfig = require('../config/excel.config');
 
 class MonitorService {
-  /**
-   * Check Excel file size
-   *
-   * @returns {Promise<number>} File size in MB
-   */
-  async checkFileSize() {
-    try {
-      const stats = await fs.stat(excelConfig.excelFilePath);
-      const sizeInMB = stats.size / (1024 * 1024);
-
-      if (sizeInMB > excelConfig.warningFileSizeMB) {
-        console.warn(`⚠️  Excel file is ${sizeInMB.toFixed(2)}MB (Warning threshold: ${excelConfig.warningFileSizeMB}MB)`);
-      }
-
-      if (sizeInMB > excelConfig.maxFileSizeMB) {
-        console.error(`❌ Excel file exceeds maximum size: ${sizeInMB.toFixed(2)}MB > ${excelConfig.maxFileSizeMB}MB`);
-        console.error('   Consider archiving old records immediately!');
-      }
-
-      return sizeInMB;
-    } catch (error) {
-      console.error('Error checking file size:', error.message);
-      return 0;
-    }
-  }
-
-  /**
-   * Get row count in Excel file
-   *
-   * @returns {Promise<number>} Number of rows (excluding header)
-   */
-  async getRowCount() {
-    try {
-      const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.readFile(excelConfig.excelFilePath);
-      const worksheet = workbook.getWorksheet('Submissions');
-
-      const rowCount = worksheet.rowCount - 1; // Minus header
-
-      if (rowCount > excelConfig.warningRows) {
-        console.warn(`⚠️  Excel file has ${rowCount} rows (Warning threshold: ${excelConfig.warningRows})`);
-        console.warn('   Consider archiving old records soon');
-      }
-
-      if (rowCount > excelConfig.maxRows) {
-        console.error(`❌ Excel file exceeds maximum rows: ${rowCount} > ${excelConfig.maxRows}`);
-        console.error('   Archive old records or migrate to database!');
-      }
-
-      return rowCount;
-    } catch (error) {
-      console.error('Error getting row count:', error.message);
-      return 0;
-    }
-  }
-
   /**
    * Get comprehensive health check
    *
@@ -67,29 +13,35 @@ class MonitorService {
    */
   async getHealthCheck() {
     try {
-      const [fileSize, rowCount, lastBackup, backups] = await Promise.all([
-        this.checkFileSize(),
-        this.getRowCount(),
+      const [stats, lastBackup, backups] = await Promise.all([
+        dbService.getStatistics(),
         backupService.getLastBackupTime(),
         backupService.listBackups()
       ]);
 
-      const stats = await fs.stat(excelConfig.excelFilePath);
+      const fileSize = stats.fileSizeMB;
+      const rowCount = stats.total;
 
       // Calculate health status
       let status = 'healthy';
       const warnings = [];
 
-      if (fileSize > excelConfig.warningFileSizeMB) {
-        warnings.push(`File size is ${fileSize.toFixed(2)}MB (threshold: ${excelConfig.warningFileSizeMB}MB)`);
+      // Define thresholds (reuse existing or set new ones for DB)
+      const MAX_ROWS = 100000;
+      const WARNING_ROWS = 50000;
+      const MAX_SIZE_MB = 100;
+      const WARNING_SIZE_MB = 50;
+
+      if (fileSize > WARNING_SIZE_MB) {
+        warnings.push(`File size is ${fileSize.toFixed(2)}MB (threshold: ${WARNING_SIZE_MB}MB)`);
       }
 
-      if (rowCount > excelConfig.warningRows) {
-        warnings.push(`Row count is ${rowCount} (threshold: ${excelConfig.warningRows})`);
+      if (rowCount > WARNING_ROWS) {
+        warnings.push(`Row count is ${rowCount} (threshold: ${WARNING_ROWS})`);
       }
 
       if (lastBackup) {
-        const hoursSinceBackup = (Date.now() - lastBackup.getTime()) / (1000 * 60 * 60);
+        const hoursSinceBackup = (Date.now() - new Date(lastBackup).getTime()) / (1000 * 60 * 60);
         if (hoursSinceBackup > 24) {
           warnings.push(`Last backup was ${hoursSinceBackup.toFixed(1)} hours ago`);
         }
@@ -105,17 +57,15 @@ class MonitorService {
         status,
         timestamp: new Date().toISOString(),
         file: {
-          path: excelConfig.excelFilePath,
-          sizeMB: parseFloat(fileSize.toFixed(2)),
-          sizeBytes: stats.size,
-          lastModified: stats.mtime,
+          path: dbConfig.dbPath,
+          sizeMB: fileSize,
           rowCount
         },
         thresholds: {
-          maxRows: excelConfig.maxRows,
-          warningRows: excelConfig.warningRows,
-          maxFileSizeMB: excelConfig.maxFileSizeMB,
-          warningFileSizeMB: excelConfig.warningFileSizeMB
+          maxRows: MAX_ROWS,
+          warningRows: WARNING_ROWS,
+          maxFileSizeMB: MAX_SIZE_MB,
+          warningFileSizeMB: WARNING_SIZE_MB
         },
         backup: {
           lastBackup,
@@ -143,52 +93,23 @@ class MonitorService {
    * @returns {Promise<Object>} Archive results
    */
   async archiveOldRecords(monthsOld = 6) {
-    try {
-      const ExcelJS = require('exceljs');
-      const path = require('path');
+    // Determine cutoff date
+    const cutoffDate = new Date();
+    cutoffDate.setMonth(cutoffDate.getMonth() - monthsOld);
+    const cutoffDateStr = cutoffDate.toISOString();
 
+    try {
       // Create backup before archiving
       await backupService.createBackup();
 
-      const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.readFile(excelConfig.excelFilePath);
-      const worksheet = workbook.getWorksheet('Submissions');
+      // Count eligible records
+      const countRow = await dbService.get(
+        `SELECT COUNT(*) as count FROM submissions WHERE submissionDate < ?`,
+        [cutoffDateStr]
+      );
+      const count = countRow ? countRow.count : 0;
 
-      // Calculate cutoff date
-      const cutoffDate = new Date();
-      cutoffDate.setMonth(cutoffDate.getMonth() - monthsOld);
-
-      // Create archive workbook
-      const archiveWorkbook = new ExcelJS.Workbook();
-      const archiveSheet = archiveWorkbook.addWorksheet('Archived Submissions');
-      archiveSheet.columns = excelConfig.columns;
-
-      // Style header
-      archiveSheet.getRow(1).font = { bold: true };
-      archiveSheet.getRow(1).fill = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'FFE0E0E0' }
-      };
-
-      const rowsToArchive = [];
-
-      worksheet.eachRow((row, rowNumber) => {
-        if (rowNumber > 1) {
-          const date = new Date(row.getCell(2).value);
-          if (date < cutoffDate) {
-            // Copy row to archive
-            const rowData = {};
-            excelConfig.columns.forEach((col, index) => {
-              rowData[col.key] = row.getCell(index + 1).value;
-            });
-            archiveSheet.addRow(rowData);
-            rowsToArchive.push(rowNumber);
-          }
-        }
-      });
-
-      if (rowsToArchive.length === 0) {
+      if (count === 0) {
         return {
           success: true,
           message: 'No records to archive',
@@ -196,31 +117,71 @@ class MonitorService {
         };
       }
 
-      // Save archive
-      const timestamp = new Date().toISOString().split('T')[0];
-      const archivePath = path.join(
-        excelConfig.archiveDir,
-        `archive_${timestamp}_${rowsToArchive.length}records.xlsx`
+      // We should first export these to an archive file (Excel) before deleting
+      // This effectively moves them to an archive file
+
+      // 1. Get filtered submissions
+      const submissions = await dbService.all(
+        `SELECT * FROM submissions WHERE submissionDate < ?`,
+        [cutoffDateStr]
       );
 
-      await archiveWorkbook.xlsx.writeFile(archivePath);
+      // 2. Export them using dbService export logic or custom logic
+      // We can reuse ExcelJS here locally to save archive
+      const ExcelJS = require('exceljs');
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet('Archived Submissions');
 
-      // Remove archived rows from main file (in reverse to maintain indices)
-      for (let i = rowsToArchive.length - 1; i >= 0; i--) {
-        worksheet.spliceRows(rowsToArchive[i], 1);
-      }
+      // Define columns
+      worksheet.columns = [
+        { header: 'ID', key: 'id', width: 25 },
+        { header: 'Submission Date', key: 'submissionDate', width: 20 },
+        { header: 'Booking Date', key: 'bookingDate', width: 20 },
+        { header: 'Name', key: 'name', width: 30 },
+        { header: 'UPI Number', key: 'upiNumber', width: 15 },
+        { header: 'WhatsApp Number', key: 'whatsappNumber', width: 15 },
+        { header: 'Ayambil Shala Name', key: 'ayambilShalaName', width: 40 },
+        { header: 'City', key: 'city', width: 20 },
+        { header: 'Status', key: 'status', width: 15 },
+        { header: 'IP Address', key: 'ipAddress', width: 20 }
+      ];
 
-      await workbook.xlsx.writeFile(excelConfig.excelFilePath);
+      worksheet.getRow(1).font = { bold: true };
 
-      console.log(`✓ Archived ${rowsToArchive.length} records to ${archivePath}`);
+      submissions.forEach(s => {
+        worksheet.addRow({
+          ...s,
+          submissionDate: new Date(s.submissionDate),
+          bookingDate: new Date(s.bookingDate)
+        });
+      });
+
+      // 3. Save archive file
+      const timestamp = new Date().toISOString().split('T')[0];
+      const archivePath = require('path').join(
+        excelConfig.archiveDir,
+        `archive_${timestamp}_${count}records.xlsx`
+      );
+
+      // Ensure dir exists (reuse logic or add check)
+      await fs.mkdir(excelConfig.archiveDir, { recursive: true });
+
+      await workbook.xlsx.writeFile(archivePath);
+
+      // 4. Delete from DB
+      await dbService.run(
+        `DELETE FROM submissions WHERE submissionDate < ?`,
+        [cutoffDateStr]
+      );
 
       return {
         success: true,
-        message: `Successfully archived ${rowsToArchive.length} records`,
-        archivedCount: rowsToArchive.length,
+        message: `Successfully archived ${count} records`,
+        archivedCount: count,
         archivePath,
         cutoffDate
       };
+
     } catch (error) {
       console.error('Archive failed:', error.message);
       throw error;

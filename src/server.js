@@ -8,9 +8,11 @@ const path = require('path');
 // Import routes
 const submissionRoutes = require('./routes/submission.routes');
 const adminRoutes = require('./routes/admin.routes');
+const anumodanaRoutes = require('./routes/anumodana.routes');
+const calendarRoutes = require('./routes/calendar.routes');
 
 // Import services
-const excelService = require('./services/excel.service');
+const dbService = require('./services/db.service');
 const backupService = require('./services/backup.service');
 const monitorService = require('./services/monitor.service');
 
@@ -77,6 +79,11 @@ if (process.env.NODE_ENV === 'development') {
 // API Routes
 app.use('/api/submissions', submissionRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/anumodana', anumodanaRoutes);
+app.use('/api/calendar', calendarRoutes);
+
+// Serve static files
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -150,9 +157,9 @@ async function startServer() {
     console.log('  વિહાર રક્ષા તપ - Server Starting...  ');
     console.log('═══════════════════════════════════════════════════════');
 
-    // Initialize Excel file if it doesn't exist
-    console.log('\n📋 Checking Excel file...');
-    await excelService.initializeFile();
+    // Initialize Database
+    console.log('\n📋 Initializing Database...');
+    await dbService.initializeDatabase();
 
     // Schedule automatic backups
     console.log('\n💾 Setting up backup system...');

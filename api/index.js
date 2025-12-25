@@ -59,9 +59,13 @@ app.get('/api/health', (req, res) => {
 try {
     const submissionRoutes = require('../src/routes/submission.routes');
     const adminRoutes = require('../src/routes/admin.routes');
+    const calendarRoutes = require('../src/routes/calendar.routes');
+    const anumodanaRoutes = require('../src/routes/anumodana.routes');
 
     app.use('/api/submissions', submissionRoutes);
     app.use('/api/admin', adminRoutes);
+    app.use('/api/calendar', calendarRoutes);
+    app.use('/api/anumodana', anumodanaRoutes);
     console.log('Full routes loaded successfully');
 } catch (error) {
     console.error('Could not load full routes:', error.message);

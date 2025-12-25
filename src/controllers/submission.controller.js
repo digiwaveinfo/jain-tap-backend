@@ -1,4 +1,4 @@
-const excelService = require('../services/excel.service');
+const dbService = require('../services/db.service');
 const backupService = require('../services/backup.service');
 const emailService = require('../services/email.service');
 const { getClientIp, paginate } = require('../utils/helpers');
@@ -10,7 +10,7 @@ const createSubmission = async (req, res) => {
   try {
     // Validate booking date if provided
     if (req.body.bookingDate) {
-      const validation = await excelService.validateBookingDate(req.body.bookingDate);
+      const validation = await dbService.validateBookingDate(req.body.bookingDate);
 
       if (!validation.valid) {
         return res.status(400).json({
@@ -31,8 +31,8 @@ const createSubmission = async (req, res) => {
       ipAddress: getClientIp(req)
     };
 
-    // Add submission to Excel
-    const result = await excelService.addSubmission(submissionData);
+    // Add submission to DB
+    const result = await dbService.addSubmission(submissionData);
 
     // Send confirmation email (if enabled and email provided)
     if (submissionData.email) {
@@ -70,9 +70,10 @@ const getAllSubmissions = async (req, res) => {
     if (state) filters.state = state;
 
     // Get submissions
-    const submissions = await excelService.getAllSubmissions(filters);
+    const submissions = await dbService.getAllSubmissions(filters);
 
-    // Paginate
+    // Paginate (dbService currently returns all, so we paginate manually or need db paging)
+    // For now we use the helper paginate as before since sqlite getAllSubmissions returns all
     const paginatedResult = paginate(submissions, parseInt(page), parseInt(limit));
 
     res.json({
@@ -95,7 +96,7 @@ const getAllSubmissions = async (req, res) => {
 const getSubmissionById = async (req, res) => {
   try {
     const { id } = req.params;
-    const submission = await excelService.getSubmissionById(id);
+    const submission = await dbService.getSubmissionById(id);
 
     if (!submission) {
       return res.status(404).json({
@@ -128,7 +129,7 @@ const updateSubmission = async (req, res) => {
     // Create backup before update
     await backupService.createBackup();
 
-    const result = await excelService.updateSubmission(id, req.body);
+    const result = await dbService.updateSubmission(id, req.body);
 
     res.json(result);
   } catch (error) {
@@ -159,7 +160,7 @@ const deleteSubmission = async (req, res) => {
     // Create backup before delete
     await backupService.createBackup();
 
-    const result = await excelService.deleteSubmission(id);
+    const result = await dbService.deleteSubmission(id);
 
     res.json(result);
   } catch (error) {
@@ -194,7 +195,7 @@ const searchSubmissions = async (req, res) => {
       });
     }
 
-    const results = await excelService.searchSubmissions(q);
+    const results = await dbService.searchSubmissions(q);
 
     res.json({
       success: true,
@@ -216,7 +217,7 @@ const searchSubmissions = async (req, res) => {
  */
 const getStatistics = async (req, res) => {
   try {
-    const stats = await excelService.getStatistics();
+    const stats = await dbService.getStatistics();
 
     res.json({
       success: true,
@@ -245,7 +246,7 @@ const exportSubmissions = async (req, res) => {
     if (city) filters.city = city;
     if (state) filters.state = state;
 
-    const exportPath = await excelService.exportSubmissions(filters);
+    const exportPath = await dbService.exportSubmissions(filters);
 
     res.download(exportPath, `submissions_export_${Date.now()}.xlsx`, (err) => {
       if (err) {
@@ -285,12 +286,15 @@ const getBookingCountsByDateRange = async (req, res) => {
     const start = new Date(startDate);
     const end = new Date(endDate);
 
-    const bookingCounts = await excelService.getBookingCountsByDateRange(start, end);
+    const bookingCounts = await dbService.getBookingCountsByDateRange(start, end);
+
+    // Fetch max bookings from settings to return dynamically
+    const maxBookingsPerDay = await dbService.getSetting('max_bookings_per_day', '3');
 
     res.json({
       success: true,
       bookingCounts,
-      maxBookingsPerDay: 3
+      maxBookingsPerDay: parseInt(maxBookingsPerDay, 10)
     });
   } catch (error) {
     console.error('Get booking counts error:', error);
@@ -316,7 +320,7 @@ const checkDateAvailability = async (req, res) => {
       });
     }
 
-    const availability = await excelService.isDateAvailable(date);
+    const availability = await dbService.isDateAvailable(date);
 
     res.json({
       success: true,
@@ -347,7 +351,7 @@ const validateBookingDate = async (req, res) => {
       });
     }
 
-    const validation = await excelService.validateBookingDate(bookingDate);
+    const validation = await dbService.validateBookingDate(bookingDate);
 
     if (!validation.valid) {
       return res.status(400).json({

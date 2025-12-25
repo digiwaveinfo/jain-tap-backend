@@ -1,6 +1,7 @@
 const { authenticateAdmin, generateToken } = require('../middleware/auth.middleware');
 const monitorService = require('../services/monitor.service');
 const backupService = require('../services/backup.service');
+const dbService = require('../services/db.service');
 
 /**
  * Admin login
@@ -54,8 +55,8 @@ const getHealth = async (req, res) => {
     const health = await monitorService.getHealthCheck();
 
     const statusCode = health.status === 'healthy' ? 200 :
-                       health.status === 'warning' ? 200 :
-                       health.status === 'critical' ? 503 : 500;
+      health.status === 'warning' ? 200 :
+        health.status === 'critical' ? 503 : 500;
 
     res.status(statusCode).json({
       success: true,
@@ -163,11 +164,65 @@ const archiveRecords = async (req, res) => {
   }
 };
 
+/**
+ * Get system settings
+ */
+const getSettings = async (req, res) => {
+  try {
+    const maxBookingsPerDay = await dbService.getSetting('max_bookings_per_day', '3');
+    const maxBookingsPerMonth = await dbService.getSetting('max_bookings_per_month', '1000');
+
+    res.json({
+      success: true,
+      data: {
+        maxBookingsPerDay: parseInt(maxBookingsPerDay, 10),
+        maxBookingsPerMonth: parseInt(maxBookingsPerMonth, 10)
+      }
+    });
+  } catch (error) {
+    console.error('Get settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get settings'
+    });
+  }
+};
+
+/**
+ * Update system settings
+ */
+const updateSettings = async (req, res) => {
+  try {
+    const { maxBookingsPerDay, maxBookingsPerMonth } = req.body;
+
+    if (maxBookingsPerDay) {
+      await dbService.setSetting('max_bookings_per_day', maxBookingsPerDay);
+    }
+
+    if (maxBookingsPerMonth) {
+      await dbService.setSetting('max_bookings_per_month', maxBookingsPerMonth);
+    }
+
+    res.json({
+      success: true,
+      message: 'Settings updated successfully'
+    });
+  } catch (error) {
+    console.error('Update settings error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update settings'
+    });
+  }
+};
+
 module.exports = {
   login,
   getHealth,
   getBackups,
   createBackup,
   restoreBackup,
-  archiveRecords
+  archiveRecords,
+  getSettings,
+  updateSettings
 };

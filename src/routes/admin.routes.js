@@ -29,4 +29,8 @@ router.post('/backups/restore', authenticateToken, adminController.restoreBackup
 // Archive old records
 router.post('/archive', authenticateToken, adminController.archiveRecords);
 
+// System settings
+router.get('/settings', authenticateToken, adminController.getSettings);
+router.put('/settings', authenticateToken, adminController.updateSettings);
+
 module.exports = router;

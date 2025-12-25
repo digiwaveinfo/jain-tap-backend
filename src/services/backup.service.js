@@ -2,16 +2,17 @@ const fs = require('fs').promises;
 const path = require('path');
 const cron = require('node-cron');
 const excelConfig = require('../config/excel.config');
+const dbConfig = require('../config/db.config');
 
 class BackupService {
   constructor() {
     this.backupDir = excelConfig.backupDir;
     this.maxBackups = excelConfig.maxBackups;
-    this.filePath = excelConfig.excelFilePath;
+    this.filePath = dbConfig.dbPath;
   }
 
   /**
-   * Create backup of Excel file
+   * Create backup of SQLite file
    *
    * @returns {Promise<string>} Path to backup file
    */
@@ -24,7 +25,7 @@ class BackupService {
       try {
         await fs.access(this.filePath);
       } catch {
-        console.log('⚠️  Source Excel file does not exist yet. Skipping backup.');
+        console.log('⚠️  Source database file does not exist yet. Skipping backup.');
         return null;
       }
 
@@ -35,7 +36,7 @@ class BackupService {
         .replace(/\..+/, '')
         .replace(/:/g, '-');
 
-      const backupFileName = `submissions_backup_${timestamp}.xlsx`;
+      const backupFileName = `submissions_backup_${timestamp}.sqlite`;
       const backupPath = path.join(this.backupDir, backupFileName);
 
       // Copy file
@@ -61,7 +62,7 @@ class BackupService {
       const files = await fs.readdir(this.backupDir);
 
       const backupFiles = files
-        .filter(f => f.startsWith('submissions_backup_') && f.endsWith('.xlsx'))
+        .filter(f => f.startsWith('submissions_backup_') && f.endsWith('.sqlite'))
         .map(f => ({
           name: f,
           path: path.join(this.backupDir, f)
@@ -111,7 +112,7 @@ class BackupService {
       const files = await fs.readdir(this.backupDir);
 
       const backupFiles = files
-        .filter(f => f.startsWith('submissions_backup_') && f.endsWith('.xlsx'))
+        .filter(f => f.startsWith('submissions_backup_') && f.endsWith('.sqlite'))
         .map(f => ({
           name: f,
           path: path.join(this.backupDir, f)
@@ -154,7 +155,7 @@ class BackupService {
       await fs.access(backupPath);
 
       // Create backup of current file before restoring
-      const corruptedFileName = `corrupted_${Date.now()}.xlsx`;
+      const corruptedFileName = `corrupted_${Date.now()}.sqlite`;
       const corruptedPath = path.join(this.backupDir, corruptedFileName);
 
       try {
