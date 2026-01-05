@@ -1,7 +1,10 @@
 const dbService = require('../services/db.service');
 const backupService = require('../services/backup.service');
 const emailService = require('../services/email.service');
-const { getClientIp, paginate } = require('../utils/helpers');
+const logger = require('../utils/logger');
+const { getClientIp, validateDateRange, isValidDateFormat } = require('../utils/helpers');
+const { sendSuccess, sendError, sendBadRequest, sendNotFound, sendCreated, sendPaginated } = require('../utils/response');
+const { BOOKING, HTTP } = require('../config/constants');
 
 /**
  * Create new submission
@@ -13,7 +16,7 @@ const createSubmission = async (req, res) => {
       const validation = await dbService.validateBookingDate(req.body.bookingDate);
 
       if (!validation.valid) {
-        return res.status(400).json({
+        return res.status(HTTP.BAD_REQUEST).json({
           success: false,
           message: validation.error,
           messageGu: validation.errorGu,
@@ -34,59 +37,69 @@ const createSubmission = async (req, res) => {
     // Add submission to DB
     const result = await dbService.addSubmission(submissionData);
 
-    // Send confirmation email (if enabled and email provided)
+    logger.info('Submission created', { 
+      submissionId: result.id, 
+      bookingDate: req.body.bookingDate,
+      requestId: req.id 
+    });
+
+    // Send confirmation email (if enabled and email provided) - M8 fix: better error handling
     if (submissionData.email) {
       emailService.sendSubmissionConfirmation({
         ...submissionData,
         id: result.id,
         date: result.data.date
+      }).then(emailResult => {
+        if (!emailResult.success) {
+          logger.warn('Email send failed', { 
+            submissionId: result.id, 
+            error: emailResult.message,
+            requestId: req.id 
+          });
+        }
       }).catch(err => {
-        console.error('Email send failed (non-blocking):', err.message);
+        logger.error('Email send error', { 
+          submissionId: result.id, 
+          error: err.message,
+          requestId: req.id 
+        });
       });
     }
 
-    res.status(201).json(result);
+    res.status(HTTP.CREATED).json(result);
   } catch (error) {
-    console.error('Create submission error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to submit form. Please try again.',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    logger.error('Create submission error', { error: error.message, requestId: req.id });
+    return sendError(res, error.message || 'Failed to submit form. Please try again.');
   }
 };
 
 /**
  * Get all submissions (Admin only)
+ * Uses database-level pagination for better performance
  */
 const getAllSubmissions = async (req, res) => {
   try {
-    const { page = 1, limit = 50, status, city, state } = req.query;
+    const { page = 1, limit = 50, status, city, state, startDate, endDate } = req.query;
+
+    // Validate pagination params
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit) || 50));
 
     // Build filters
     const filters = {};
     if (status) filters.status = status;
     if (city) filters.city = city;
     if (state) filters.state = state;
+    if (startDate) filters.startDate = startDate;
+    if (endDate) filters.endDate = endDate;
 
-    // Get submissions
-    const submissions = await dbService.getAllSubmissions(filters);
+    // Use database-level pagination
+    const result = await dbService.getSubmissionsPaginated(filters, pageNum, limitNum);
 
-    // Paginate (dbService currently returns all, so we paginate manually or need db paging)
-    // For now we use the helper paginate as before since sqlite getAllSubmissions returns all
-    const paginatedResult = paginate(submissions, parseInt(page), parseInt(limit));
-
-    res.json({
-      success: true,
-      ...paginatedResult
-    });
+    return sendPaginated(res, result.data, result.pagination, 'Submissions retrieved');
   } catch (error) {
-    console.error('Get submissions error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch submissions',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    logger.error('Get submissions error', { error: error.message, requestId: req.id });
+    return sendError(res, 'Failed to fetch submissions');
   }
 };
 
@@ -99,23 +112,13 @@ const getSubmissionById = async (req, res) => {
     const submission = await dbService.getSubmissionById(id);
 
     if (!submission) {
-      return res.status(404).json({
-        success: false,
-        message: 'Submission not found'
-      });
+      return sendNotFound(res, 'Submission not found');
     }
 
-    res.json({
-      success: true,
-      data: submission
-    });
+    return sendSuccess(res, submission, 'Submission retrieved');
   } catch (error) {
-    console.error('Get submission error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch submission',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    logger.error('Get submission error', { error: error.message, requestId: req.id });
+    return sendError(res, 'Failed to fetch submission');
   }
 };
 
@@ -131,22 +134,16 @@ const updateSubmission = async (req, res) => {
 
     const result = await dbService.updateSubmission(id, req.body);
 
-    res.json(result);
+    logger.info('Submission updated', { submissionId: id, requestId: req.id });
+    return sendSuccess(res, result.data, result.message);
   } catch (error) {
-    console.error('Update submission error:', error);
+    logger.error('Update submission error', { error: error.message, requestId: req.id });
 
     if (error.message === 'Submission not found') {
-      return res.status(404).json({
-        success: false,
-        message: error.message
-      });
+      return sendNotFound(res, error.message);
     }
 
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update submission',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    return sendError(res, 'Failed to update submission');
   }
 };
 
@@ -162,22 +159,16 @@ const deleteSubmission = async (req, res) => {
 
     const result = await dbService.deleteSubmission(id);
 
-    res.json(result);
+    logger.info('Submission deleted', { submissionId: id, requestId: req.id });
+    return sendSuccess(res, null, result.message);
   } catch (error) {
-    console.error('Delete submission error:', error);
+    logger.error('Delete submission error', { error: error.message, requestId: req.id });
 
     if (error.message === 'Submission not found') {
-      return res.status(404).json({
-        success: false,
-        message: error.message
-      });
+      return sendNotFound(res, error.message);
     }
 
-    res.status(500).json({
-      success: false,
-      message: 'Failed to delete submission',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    return sendError(res, 'Failed to delete submission');
   }
 };
 
@@ -189,26 +180,15 @@ const searchSubmissions = async (req, res) => {
     const { q } = req.query;
 
     if (!q || q.trim().length < 2) {
-      return res.status(400).json({
-        success: false,
-        message: 'Search query must be at least 2 characters'
-      });
+      return sendBadRequest(res, 'Search query must be at least 2 characters');
     }
 
     const results = await dbService.searchSubmissions(q);
 
-    res.json({
-      success: true,
-      data: results,
-      count: results.length
-    });
+    return sendSuccess(res, results, `Found ${results.length} results`);
   } catch (error) {
-    console.error('Search submissions error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Search failed',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    logger.error('Search submissions error', { error: error.message, requestId: req.id });
+    return sendError(res, 'Search failed');
   }
 };
 
@@ -219,17 +199,10 @@ const getStatistics = async (req, res) => {
   try {
     const stats = await dbService.getStatistics();
 
-    res.json({
-      success: true,
-      data: stats
-    });
+    return sendSuccess(res, stats, 'Statistics retrieved');
   } catch (error) {
-    console.error('Get statistics error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch statistics',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    logger.error('Get statistics error', { error: error.message, requestId: req.id });
+    return sendError(res, 'Failed to fetch statistics');
   }
 };
 
@@ -238,71 +211,65 @@ const getStatistics = async (req, res) => {
  */
 const exportSubmissions = async (req, res) => {
   try {
-    const { status, city, state } = req.query;
+    const { status, city, state, startDate, endDate } = req.query;
 
     // Build filters
     const filters = {};
     if (status) filters.status = status;
     if (city) filters.city = city;
     if (state) filters.state = state;
+    if (startDate) filters.startDate = startDate;
+    if (endDate) filters.endDate = endDate;
 
     const exportPath = await dbService.exportSubmissions(filters);
 
+    logger.info('Submissions exported', { filters, requestId: req.id });
+
     res.download(exportPath, `submissions_export_${Date.now()}.xlsx`, (err) => {
       if (err) {
-        console.error('Download error:', err);
+        logger.error('Download error', { error: err.message, requestId: req.id });
         if (!res.headersSent) {
-          res.status(500).json({
-            success: false,
-            message: 'Failed to download export file'
-          });
+          return sendError(res, 'Failed to download export file');
         }
       }
     });
   } catch (error) {
-    console.error('Export submissions error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Export failed',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    logger.error('Export submissions error', { error: error.message, requestId: req.id });
+    return sendError(res, 'Export failed');
   }
 };
 
 /**
- * Get booking counts for date range
+ * Get booking counts for date range (M6 fix - with validation)
  */
 const getBookingCountsByDateRange = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
 
     if (!startDate || !endDate) {
-      return res.status(400).json({
-        success: false,
-        message: 'startDate and endDate are required'
-      });
+      return sendBadRequest(res, 'startDate and endDate are required');
+    }
+
+    // Validate date range (M6 fix)
+    const rangeValidation = validateDateRange(startDate, endDate, BOOKING.MAX_DATE_RANGE_DAYS);
+    if (!rangeValidation.valid) {
+      return sendBadRequest(res, rangeValidation.error);
     }
 
     const start = new Date(startDate);
     const end = new Date(endDate);
 
     const bookingCounts = await dbService.getBookingCountsByDateRange(start, end);
-
-    // Fetch max bookings from settings to return dynamically
     const maxBookingsPerDay = await dbService.getSetting('max_bookings_per_day', '3');
 
-    res.json({
+    return res.json({
       success: true,
       bookingCounts,
       maxBookingsPerDay: parseInt(maxBookingsPerDay, 10)
     });
   } catch (error) {
-    console.error('Get booking counts error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch booking counts',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    logger.error('Get booking counts error', { error: error.message, requestId: req.id });
+    return sendError(res, 'Failed to fetch booking counts');
   }
 };
 
@@ -314,26 +281,20 @@ const checkDateAvailability = async (req, res) => {
     const { date } = req.params;
 
     if (!date) {
-      return res.status(400).json({
-        success: false,
-        message: 'Date is required'
-      });
+      return sendBadRequest(res, 'Date is required');
+    }
+
+    // Validate date format (L6 fix)
+    if (!isValidDateFormat(date)) {
+      return sendBadRequest(res, 'Date must be in YYYY-MM-DD format');
     }
 
     const availability = await dbService.isDateAvailable(date);
 
-    res.json({
-      success: true,
-      date,
-      ...availability
-    });
+    return sendSuccess(res, { date, ...availability }, 'Availability checked');
   } catch (error) {
-    console.error('Check availability error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to check availability',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    logger.error('Check availability error', { error: error.message, requestId: req.id });
+    return sendError(res, 'Failed to check availability');
   }
 };
 
@@ -345,32 +306,27 @@ const validateBookingDate = async (req, res) => {
     const { bookingDate } = req.body;
 
     if (!bookingDate) {
-      return res.status(400).json({
-        success: false,
-        message: 'Booking date is required'
-      });
+      return sendBadRequest(res, 'Booking date is required');
+    }
+
+    // Validate date format (L6 fix)
+    if (!isValidDateFormat(bookingDate)) {
+      return sendBadRequest(res, 'Date must be in YYYY-MM-DD format');
     }
 
     const validation = await dbService.validateBookingDate(bookingDate);
 
     if (!validation.valid) {
-      return res.status(400).json({
+      return res.status(HTTP.BAD_REQUEST).json({
         success: false,
         ...validation
       });
     }
 
-    res.json({
-      success: true,
-      ...validation
-    });
+    return sendSuccess(res, validation, 'Date is valid');
   } catch (error) {
-    console.error('Validate booking date error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to validate booking date',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    logger.error('Validate booking date error', { error: error.message, requestId: req.id });
+    return sendError(res, 'Failed to validate booking date');
   }
 };
 

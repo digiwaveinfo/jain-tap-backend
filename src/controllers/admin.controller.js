@@ -2,6 +2,9 @@ const { authenticateAdmin, generateToken } = require('../middleware/auth.middlew
 const monitorService = require('../services/monitor.service');
 const backupService = require('../services/backup.service');
 const dbService = require('../services/db.service');
+const logger = require('../utils/logger');
+const { sendSuccess, sendError, sendBadRequest, sendUnauthorized } = require('../utils/response');
+const { HTTP } = require('../config/constants');
 
 /**
  * Admin login
@@ -11,19 +14,13 @@ const login = async (req, res) => {
     const { username, password } = req.body;
 
     if (!username || !password) {
-      return res.status(400).json({
-        success: false,
-        message: 'Username and password are required'
-      });
+      return sendBadRequest(res, 'Username and password are required');
     }
 
     const authResult = await authenticateAdmin(username, password);
 
     if (!authResult.success) {
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid credentials'
-      });
+      return sendUnauthorized(res, 'Invalid credentials');
     }
 
     const token = generateToken({
@@ -31,19 +28,15 @@ const login = async (req, res) => {
       role: authResult.user.role
     });
 
-    res.json({
-      success: true,
-      message: 'Login successful',
+    logger.info('Admin login successful', { username, requestId: req.id });
+
+    return sendSuccess(res, {
       token,
       user: authResult.user
-    });
+    }, 'Login successful');
   } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Login failed',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    logger.error('Login error', { error: error.message, requestId: req.id });
+    return sendError(res, 'Login failed');
   }
 };
 
@@ -54,22 +47,17 @@ const getHealth = async (req, res) => {
   try {
     const health = await monitorService.getHealthCheck();
 
-    const statusCode = health.status === 'healthy' ? 200 :
-      health.status === 'warning' ? 200 :
-        health.status === 'critical' ? 503 : 500;
+    const statusCode = health.status === 'healthy' ? HTTP.OK :
+      health.status === 'warning' ? HTTP.OK :
+        health.status === 'critical' ? HTTP.SERVICE_UNAVAILABLE : HTTP.INTERNAL_ERROR;
 
     res.status(statusCode).json({
       success: true,
       ...health
     });
   } catch (error) {
-    console.error('Health check error:', error);
-    res.status(500).json({
-      success: false,
-      status: 'error',
-      message: 'Health check failed',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    logger.error('Health check error', { error: error.message, requestId: req.id });
+    return sendError(res, 'Health check failed');
   }
 };
 
@@ -80,18 +68,10 @@ const getBackups = async (req, res) => {
   try {
     const backups = await backupService.listBackups();
 
-    res.json({
-      success: true,
-      data: backups,
-      count: backups.length
-    });
+    return sendSuccess(res, backups, `Found ${backups.length} backups`);
   } catch (error) {
-    console.error('Get backups error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to list backups',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    logger.error('Get backups error', { error: error.message, requestId: req.id });
+    return sendError(res, 'Failed to list backups');
   }
 };
 
@@ -102,18 +82,11 @@ const createBackup = async (req, res) => {
   try {
     const backupPath = await backupService.createBackup();
 
-    res.json({
-      success: true,
-      message: 'Backup created successfully',
-      backupPath
-    });
+    logger.info('Manual backup created', { backupPath, requestId: req.id });
+    return sendSuccess(res, { backupPath }, 'Backup created successfully');
   } catch (error) {
-    console.error('Create backup error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Backup creation failed',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    logger.error('Create backup error', { error: error.message, requestId: req.id });
+    return sendError(res, 'Backup creation failed');
   }
 };
 
@@ -125,22 +98,16 @@ const restoreBackup = async (req, res) => {
     const { backupFileName } = req.body;
 
     if (!backupFileName) {
-      return res.status(400).json({
-        success: false,
-        message: 'Backup file name is required'
-      });
+      return sendBadRequest(res, 'Backup file name is required');
     }
 
     const result = await backupService.restoreFromBackup(backupFileName);
 
-    res.json(result);
+    logger.info('Backup restored', { backupFileName, requestId: req.id });
+    return sendSuccess(res, result, result.message);
   } catch (error) {
-    console.error('Restore backup error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Restore failed',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    logger.error('Restore backup error', { error: error.message, requestId: req.id });
+    return sendError(res, 'Restore failed');
   }
 };
 
@@ -151,16 +118,18 @@ const archiveRecords = async (req, res) => {
   try {
     const { monthsOld = 6 } = req.body;
 
-    const result = await monitorService.archiveOldRecords(parseInt(monthsOld));
+    const months = Math.max(1, Math.min(24, parseInt(monthsOld) || 6));
+    const result = await monitorService.archiveOldRecords(months);
 
-    res.json(result);
-  } catch (error) {
-    console.error('Archive records error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Archive failed',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    logger.info('Records archived', { 
+      monthsOld: months, 
+      archivedCount: result.archivedCount,
+      requestId: req.id 
     });
+    return sendSuccess(res, result, result.message);
+  } catch (error) {
+    logger.error('Archive records error', { error: error.message, requestId: req.id });
+    return sendError(res, 'Archive failed');
   }
 };
 
@@ -172,19 +141,13 @@ const getSettings = async (req, res) => {
     const maxBookingsPerDay = await dbService.getSetting('max_bookings_per_day', '3');
     const maxBookingsPerMonth = await dbService.getSetting('max_bookings_per_month', '1000');
 
-    res.json({
-      success: true,
-      data: {
-        maxBookingsPerDay: parseInt(maxBookingsPerDay, 10),
-        maxBookingsPerMonth: parseInt(maxBookingsPerMonth, 10)
-      }
-    });
+    return sendSuccess(res, {
+      maxBookingsPerDay: parseInt(maxBookingsPerDay, 10),
+      maxBookingsPerMonth: parseInt(maxBookingsPerMonth, 10)
+    }, 'Settings retrieved');
   } catch (error) {
-    console.error('Get settings error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get settings'
-    });
+    logger.error('Get settings error', { error: error.message, requestId: req.id });
+    return sendError(res, 'Failed to get settings');
   }
 };
 
@@ -195,24 +158,21 @@ const updateSettings = async (req, res) => {
   try {
     const { maxBookingsPerDay, maxBookingsPerMonth } = req.body;
 
-    if (maxBookingsPerDay) {
-      await dbService.setSetting('max_bookings_per_day', maxBookingsPerDay);
+    if (maxBookingsPerDay !== undefined) {
+      const value = Math.max(1, Math.min(100, parseInt(maxBookingsPerDay) || 3));
+      await dbService.setSetting('max_bookings_per_day', value);
     }
 
-    if (maxBookingsPerMonth) {
-      await dbService.setSetting('max_bookings_per_month', maxBookingsPerMonth);
+    if (maxBookingsPerMonth !== undefined) {
+      const value = Math.max(1, Math.min(10000, parseInt(maxBookingsPerMonth) || 1000));
+      await dbService.setSetting('max_bookings_per_month', value);
     }
 
-    res.json({
-      success: true,
-      message: 'Settings updated successfully'
-    });
+    logger.info('Settings updated', { maxBookingsPerDay, maxBookingsPerMonth, requestId: req.id });
+    return sendSuccess(res, null, 'Settings updated successfully');
   } catch (error) {
-    console.error('Update settings error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update settings'
-    });
+    logger.error('Update settings error', { error: error.message, requestId: req.id });
+    return sendError(res, 'Failed to update settings');
   }
 };
 

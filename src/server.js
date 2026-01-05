@@ -4,6 +4,14 @@ const cors = require('cors');
 const helmet = require('helmet');
 const path = require('path');
 
+// Import utilities and config
+const logger = require('./utils/logger');
+const { REQUEST, JWT } = require('./config/constants');
+
+// Import middleware
+const requestIdMiddleware = require('./middleware/requestId.middleware');
+const timeoutMiddleware = require('./middleware/timeout.middleware');
+
 // Import routes
 const submissionRoutes = require('./routes/submission.routes');
 const adminRoutes = require('./routes/admin.routes');
@@ -19,33 +27,68 @@ const monitorService = require('./services/monitor.service');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// ===== Security Validations (H2 fix) =====
+if (process.env.NODE_ENV === 'production') {
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret || jwtSecret.length < JWT.MIN_SECRET_LENGTH) {
+    logger.error('JWT_SECRET must be at least 32 characters in production');
+    process.exit(1);
+  }
+  if (jwtSecret.includes('change-this') || jwtSecret.includes('secret-key') || jwtSecret.includes('your-secret')) {
+    logger.error('Default JWT_SECRET detected. Use a strong random secret.');
+    process.exit(1);
+  }
+}
+
 // ===== Middleware Setup =====
 
-// Security headers - configure to allow cross-origin images
+// Request ID tracking (M18 fix)
+app.use(requestIdMiddleware);
+
+// Request timeout (M17 fix)
+app.use(timeoutMiddleware());
+
+// Security headers with HSTS (H3 fix)
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },
-  crossOriginEmbedderPolicy: false
+  crossOriginEmbedderPolicy: false,
+  hsts: {
+    maxAge: 31536000, // 1 year
+    includeSubDomains: true,
+    preload: true
+  }
 }));
 
-// CORS configuration
+// CORS configuration (M1 fix - stricter origin validation)
 const corsOptions = {
-  origin: process.env.CLIENT_URL || 'http://localhost:3000',
+  origin: function(origin, callback) {
+    // Allow requests with no origin (mobile apps, curl, etc.)
+    if (!origin) {
+      return callback(null, true);
+    }
+    
+    const allowedOrigins = (process.env.CLIENT_URL)
+      .split(',')
+      .map(o => o.trim())
+      .filter(Boolean);
+    
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      logger.warn('CORS blocked origin', { origin, allowedOrigins });
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 200,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID']
 };
 app.use(cors(corsOptions));
 
-// Body parser
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// Request logging middleware (development only)
-if (process.env.NODE_ENV === 'development') {
-  app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
-    next();
-  });
-}
+// Body parser with reduced limits (L1 fix)
+app.use(express.json({ limit: REQUEST.MAX_JSON_SIZE }));
+app.use(express.urlencoded({ extended: true, limit: REQUEST.MAX_URL_ENCODED_SIZE }));
 
 // ===== Routes =====
 
@@ -97,6 +140,7 @@ app.get('/api/health', async (req, res) => {
     const health = await monitorService.getHealthCheck();
     res.json(health);
   } catch (error) {
+    logger.error('Health check failed', { error: error.message });
     res.status(500).json({
       status: 'error',
       message: error.message
@@ -111,81 +155,101 @@ app.use((req, res) => {
   res.status(404).json({
     success: false,
     message: 'Endpoint not found',
-    path: req.path
+    path: req.path,
+    timestamp: new Date().toISOString()
   });
 });
 
-// Global error handler
+// Global error handler (M5 fix - no stack traces in production)
 app.use((err, req, res, next) => {
-  console.error('Error:', err);
-
-  res.status(err.status || 500).json({
-    success: false,
-    message: err.message || 'Internal server error',
-    error: process.env.NODE_ENV === 'development' ? err.stack : undefined
+  logger.error('Unhandled error', {
+    requestId: req.id,
+    error: err.message,
+    stack: err.stack,
+    path: req.path
   });
+
+  // Don't expose error details in production
+  const response = {
+    success: false,
+    message: process.env.NODE_ENV === 'production' 
+      ? 'Internal server error' 
+      : err.message,
+    timestamp: new Date().toISOString()
+  };
+
+  res.status(err.status || 500).json(response);
 });
 
 // ===== Server Initialization =====
 
 async function startServer() {
   try {
-    console.log('═══════════════════════════════════════════════════════');
-    console.log('  વિહાર રક્ષા તપ - Server Starting...  ');
-    console.log('═══════════════════════════════════════════════════════');
+    logger.info('═══════════════════════════════════════════════════════');
+    logger.info('  વિહાર રક્ષા તપ - Server Starting...  ');
+    logger.info('═══════════════════════════════════════════════════════');
 
     // Initialize Database
-    console.log('\n📋 Initializing Database...');
+    logger.info('Initializing Database...');
     await dbService.initializeDatabase();
 
     // Schedule automatic backups
-    console.log('\n💾 Setting up backup system...');
+    logger.info('Setting up backup system...');
     backupService.scheduleAutoBackup();
 
     // Perform initial health check
-    console.log('\n🏥 Performing health check...');
+    logger.info('Performing health check...');
     const health = await monitorService.getHealthCheck();
-    console.log(`   Status: ${health.status.toUpperCase()}`);
-    console.log(`   File size: ${health.file?.sizeMB || 0} MB`);
-    console.log(`   Row count: ${health.file?.rowCount || 0}`);
-    console.log(`   Backups: ${health.backup?.backupCount || 0}`);
+    logger.info(`Health Status: ${health.status.toUpperCase()}`, {
+      fileSize: `${health.file?.sizeMB || 0} MB`,
+      rowCount: health.file?.rowCount || 0,
+      backups: health.backup?.backupCount || 0
+    });
 
     if (health.warnings && health.warnings.length > 0) {
-      console.log('\n⚠️  Warnings:');
-      health.warnings.forEach(warning => console.log(`   - ${warning}`));
+      health.warnings.forEach(warning => logger.warn(warning));
     }
 
     // Start listening
     app.listen(PORT, () => {
-      console.log('\n═══════════════════════════════════════════════════════');
-      console.log(`✅ Server running successfully!`);
-      console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`   Port: ${PORT}`);
-      console.log(`   API: http://localhost:${PORT}`);
-      console.log(`   Health: http://localhost:${PORT}/api/health`);
-      console.log('═══════════════════════════════════════════════════════');
-      console.log('\n🙏 જય જિનેન્દ્ર!\n');
+      logger.info('═══════════════════════════════════════════════════════');
+      logger.info(`Server running successfully!`);
+      logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
+      logger.info(`Port: ${PORT}`);
+      logger.info(`API: http://localhost:${PORT}`);
+      logger.info(`Health: http://localhost:${PORT}/api/health`);
+      logger.info('═══════════════════════════════════════════════════════');
+      logger.info('🙏 જય જિનેન્દ્ર!');
     });
 
   } catch (error) {
-    console.error('\n❌ Server startup failed:', error);
+    logger.error('Server startup failed', { error: error.message, stack: error.stack });
     process.exit(1);
   }
 }
 
 // Handle graceful shutdown
 process.on('SIGTERM', () => {
-  console.log('\n⚠️  SIGTERM received. Shutting down gracefully...');
+  logger.warn('SIGTERM received. Shutting down gracefully...');
   process.exit(0);
 });
 
 process.on('SIGINT', () => {
-  console.log('\n⚠️  SIGINT received. Shutting down gracefully...');
+  logger.warn('SIGINT received. Shutting down gracefully...');
   process.exit(0);
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught Exception', { error: error.message, stack: error.stack });
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Rejection', { reason: reason?.message || reason });
 });
 
 // Start the server
 startServer();
 
 module.exports = app;
-

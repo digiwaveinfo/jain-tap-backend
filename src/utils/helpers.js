@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const xss = require('xss');
 
 /**
  * Generate unique submission ID
@@ -32,6 +33,7 @@ function formatDate(date) {
 
 /**
  * Sanitize user input to prevent XSS
+ * Uses xss library for proper sanitization
  *
  * @param {string} input - User input
  * @returns {string} Sanitized input
@@ -39,10 +41,12 @@ function formatDate(date) {
 function sanitizeInput(input) {
   if (typeof input !== 'string') return input;
 
-  return input
-    .trim()
-    .replace(/[<>]/g, '') // Remove < and > to prevent HTML injection
-    .substring(0, 1000); // Limit length
+  // Use xss library with strict options (no HTML allowed)
+  return xss(input.trim(), {
+    whiteList: {},          // No tags allowed
+    stripIgnoreTag: true,   // Strip all tags
+    stripIgnoreTagBody: ['script', 'style'] // Remove script/style content
+  }).substring(0, 1000); // Limit length
 }
 
 /**
@@ -106,6 +110,56 @@ function paginate(items, page = 1, limit = 50) {
   };
 }
 
+/**
+ * Validate date format (YYYY-MM-DD) (L6 fix)
+ *
+ * @param {string} dateString - Date string to validate
+ * @returns {boolean} True if valid YYYY-MM-DD format
+ */
+function isValidDateFormat(dateString) {
+  if (!dateString || typeof dateString !== 'string') return false;
+  
+  const regex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!regex.test(dateString)) return false;
+  
+  const date = new Date(dateString);
+  if (isNaN(date.getTime())) return false;
+  
+  // Ensure the date string matches what we'd get from the Date object
+  return dateString === date.toISOString().split('T')[0];
+}
+
+/**
+ * Validate date range is reasonable (M6 fix)
+ *
+ * @param {string} startDate - Start date (YYYY-MM-DD)
+ * @param {string} endDate - End date (YYYY-MM-DD)
+ * @param {number} maxDays - Maximum allowed days in range
+ * @returns {Object} Validation result
+ */
+function validateDateRange(startDate, endDate, maxDays = 365) {
+  if (!isValidDateFormat(startDate)) {
+    return { valid: false, error: 'Invalid start date format. Use YYYY-MM-DD' };
+  }
+  if (!isValidDateFormat(endDate)) {
+    return { valid: false, error: 'Invalid end date format. Use YYYY-MM-DD' };
+  }
+  
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  
+  if (end < start) {
+    return { valid: false, error: 'End date must be after start date' };
+  }
+  
+  const diffDays = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+  if (diffDays > maxDays) {
+    return { valid: false, error: `Date range cannot exceed ${maxDays} days` };
+  }
+  
+  return { valid: true, diffDays };
+}
+
 module.exports = {
   generateSubmissionId,
   formatDate,
@@ -113,5 +167,7 @@ module.exports = {
   isValidMobile,
   isValidEmail,
   getClientIp,
-  paginate
+  paginate,
+  isValidDateFormat,
+  validateDateRange
 };

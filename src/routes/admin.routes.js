@@ -2,13 +2,14 @@ const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/admin.controller');
 const { authenticateToken } = require('../middleware/auth.middleware');
+const { loginLimiter } = require('../middleware/rateLimiter.middleware');
 
 /**
  * Public Routes
  */
 
-// Admin login
-router.post('/login', adminController.login);
+// Admin login (rate limited to prevent brute force)
+router.post('/login', loginLimiter, adminController.login);
 
 // Health check (public for monitoring)
 router.get('/health', adminController.getHealth);

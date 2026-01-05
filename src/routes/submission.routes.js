@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const submissionController = require('../controllers/submission.controller');
 const { authenticateToken } = require('../middleware/auth.middleware');
+const { submissionLimiter } = require('../middleware/rateLimiter.middleware');
 const {
   submissionValidationRules,
   updateSubmissionValidationRules,
@@ -31,9 +32,10 @@ router.post(
   submissionController.validateBookingDate
 );
 
-// Create new submission
+// Create new submission (rate limited to prevent spam)
 router.post(
   '/',
+  submissionLimiter,
   submissionValidationRules,
   handleValidationErrors,
   sanitizeSubmissionData,

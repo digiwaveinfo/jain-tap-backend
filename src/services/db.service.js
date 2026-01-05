@@ -106,6 +106,13 @@ class DbService {
             await this.run(`CREATE INDEX IF NOT EXISTS idx_booking_date ON submissions(bookingDate)`);
             await this.run(`CREATE INDEX IF NOT EXISTS idx_status ON submissions(status)`);
             await this.run(`CREATE INDEX IF NOT EXISTS idx_anumodana_date ON anumodana_images(date)`);
+            
+            // Additional indexes for search and filtering performance (H6 fix)
+            await this.run(`CREATE INDEX IF NOT EXISTS idx_upi_number ON submissions(upiNumber)`);
+            await this.run(`CREATE INDEX IF NOT EXISTS idx_whatsapp_number ON submissions(whatsappNumber)`);
+            await this.run(`CREATE INDEX IF NOT EXISTS idx_city ON submissions(city)`);
+            await this.run(`CREATE INDEX IF NOT EXISTS idx_submission_date ON submissions(submissionDate)`);
+            await this.run(`CREATE INDEX IF NOT EXISTS idx_status_date ON submissions(status, submissionDate)`);
 
             console.log('✓ Database tables initialized');
         } catch (error) {
@@ -266,11 +273,67 @@ class DbService {
             sql += ' AND city = ?';
             params.push(filters.city);
         }
+        if (filters.startDate) {
+            sql += ' AND date(bookingDate) >= date(?)';
+            params.push(filters.startDate);
+        }
+        if (filters.endDate) {
+            sql += ' AND date(bookingDate) <= date(?)';
+            params.push(filters.endDate);
+        }
 
         // Sort by submissionDate descending
         sql += ' ORDER BY submissionDate DESC';
 
         return await this.all(sql, params);
+    }
+
+    /**
+     * Get submissions with database-level pagination (C2 fix)
+     * More efficient than loading all records into memory
+     */
+    async getSubmissionsPaginated(filters = {}, page = 1, limit = 50) {
+        let baseSql = 'FROM submissions WHERE 1=1';
+        const params = [];
+
+        if (filters.status) {
+            baseSql += ' AND status = ?';
+            params.push(filters.status);
+        }
+        if (filters.city) {
+            baseSql += ' AND city = ?';
+            params.push(filters.city);
+        }
+        if (filters.startDate) {
+            baseSql += ' AND date(bookingDate) >= date(?)';
+            params.push(filters.startDate);
+        }
+        if (filters.endDate) {
+            baseSql += ' AND date(bookingDate) <= date(?)';
+            params.push(filters.endDate);
+        }
+
+        // Get total count
+        const countResult = await this.get(`SELECT COUNT(*) as count ${baseSql}`, params);
+        const total = countResult ? countResult.count : 0;
+
+        // Get paginated data
+        const offset = (page - 1) * limit;
+        const dataSql = `SELECT * ${baseSql} ORDER BY submissionDate DESC LIMIT ? OFFSET ?`;
+        const dataParams = [...params, limit, offset];
+        const data = await this.all(dataSql, dataParams);
+
+        return {
+            data,
+            pagination: {
+                total,
+                page: parseInt(page),
+                limit: parseInt(limit),
+                pages: Math.ceil(total / limit),
+                hasNext: page * limit < total,
+                hasPrev: page > 1
+            }
+        };
     }
 
     /**
@@ -611,6 +674,13 @@ class DbService {
 
     async getAnumodanaImages(limit = 50) {
         return await this.all(`SELECT * FROM anumodana_images ORDER BY date DESC, createdAt DESC LIMIT ?`, [limit]);
+    }
+
+    /**
+     * Get single anumodana image by ID (H5 fix - avoids N+1 query)
+     */
+    async getAnumodanaImageById(id) {
+        return await this.get(`SELECT * FROM anumodana_images WHERE id = ?`, [id]);
     }
 
     async deleteAnumodanaImage(id) {
