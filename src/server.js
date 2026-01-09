@@ -61,17 +61,17 @@ app.use(helmet({
 
 // CORS configuration (M1 fix - stricter origin validation)
 const corsOptions = {
-  origin: function(origin, callback) {
+  origin: function (origin, callback) {
     // Allow requests with no origin (mobile apps, curl, etc.)
     if (!origin) {
       return callback(null, true);
     }
-    
+
     const allowedOrigins = (process.env.CLIENT_URL)
       .split(',')
       .map(o => o.trim())
       .filter(Boolean);
-    
+
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
@@ -99,13 +99,14 @@ app.use('/api/anumodana', anumodanaRoutes);
 app.use('/api/calendar', calendarRoutes);
 
 // Serve static files with CORS headers
-app.use('/uploads', (req, res, next) => {
+// Serve static files with CORS headers
+app.use(['/uploads', '/api/uploads'], (req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   next();
 }, express.static(path.join(__dirname, '../uploads')));
 
-// Root endpoint
+// Basic Root Endpoint (API only)
 app.get('/', (req, res) => {
   res.json({
     success: true,
@@ -172,8 +173,8 @@ app.use((err, req, res, next) => {
   // Don't expose error details in production
   const response = {
     success: false,
-    message: process.env.NODE_ENV === 'production' 
-      ? 'Internal server error' 
+    message: process.env.NODE_ENV === 'production'
+      ? 'Internal server error'
       : err.message,
     timestamp: new Date().toISOString()
   };
