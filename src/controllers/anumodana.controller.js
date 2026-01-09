@@ -13,7 +13,7 @@ const getImages = async (req, res) => {
     const images = await dbService.getAnumodanaImages();
 
     // Map internal paths to public URLs
-    const baseUrl = process.env.API_URL || 'http://localhost:5000';
+    const baseUrl = process.env.API_URL;
     const imagesWithUrls = images.map(img => ({
       ...img,
       url: img.url.startsWith('http') ? img.url : `${baseUrl}/uploads/anumodana/${path.basename(img.url)}`
@@ -39,13 +39,13 @@ const uploadImage = async (req, res) => {
 
     if (!date) {
       // Clean up uploaded file if validation fails
-      await fs.unlink(req.file.path).catch(() => {});
+      await fs.unlink(req.file.path).catch(() => { });
       return sendBadRequest(res, 'Date is required');
     }
 
     // Validate date format
     if (!isValidDateFormat(date)) {
-      await fs.unlink(req.file.path).catch(() => {});
+      await fs.unlink(req.file.path).catch(() => { });
       return sendBadRequest(res, 'Date must be in YYYY-MM-DD format');
     }
 
@@ -63,7 +63,7 @@ const uploadImage = async (req, res) => {
     logger.error('Upload image error', { error: error.message, requestId: req.id });
     // Clean up file if error
     if (req.file) {
-      await fs.unlink(req.file.path).catch(() => {});
+      await fs.unlink(req.file.path).catch(() => { });
     }
     return sendError(res, 'Failed to upload image');
   }
